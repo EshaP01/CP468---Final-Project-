@@ -1,0 +1,785 @@
+---
+title: "ST362 Final Project"
+author: "Esha Panchal, Dhari Gandhi, Narmeen Sabar"
+date: "12/01/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE)
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+if(!require("ISLR")) {install.packages("ISLR")}
+if(!require("car")) {install.packages("car")}
+if(!require("leaps")) {install.packages("leaps")}
+if(!require("lmtest")){install.packages("lmtest")}
+library(ISLR)
+library(car)
+library(leaps)
+library(lmtest)
+if(!require("MASS")) {install.packages("MASS")}
+if(!require("ggplot2")){install.packages("ggplot2")}
+if(!require("AICcmodavg")){install.packages("AICcmodavg")}
+library(MASS)
+library(ggplot2)
+```
+
+```{r}
+# libraries 
+library(tidyverse)
+library(Hmisc)
+
+```
+
+```{r}
+### Modified Box-Cox transformation ###
+box.cox <- function(x,y,intercept=TRUE, ylim=NULL, 
+                   lambda =seq (-2, 2, len=42), transform.x=FALSE,verbose =TRUE, make.plot=TRUE)
+# Applies Box-Cox transformation to y with parameter values lambda,
+# prints the fitted regressions, makes a plot of the log likelihood versus lambda, and returns a
+# vector containing the log likelihood values, normalized for the transformation, for each lambda.
+# x - X matrix for current model (no column of 1's should be included for an intercept term);
+# y - Y vector. 
+# intercept - Set to FALSE for a no-intercept model.
+# ylim - The range of log-likelihood values on the y-axis (if NULL, then use range(y)).
+#        Useful if you want to use the same scale for two plots. 
+# lambda - Y is raised to the power lambda. For log(Y) set lambda=0.
+# transform.x - Apply the same transformation to all elements of x?
+# verbose - Print fitted regression for each lambda?
+# make.plot - Make the plot?
+
+{  # Use only cases where y > 0 - otherwise geometric mean undefined. 
+     good.cases <- (y>0)
+     y <- y[good.cases]
+     x <- as.matrix(x)
+     x <- x[good.cases, , drop=F]
+     
+
+     # Geometric mean of y.
+     g <- exp(mean(log(y)))
+  
+     if(transform.x)
+     { 
+
+        # An x column will only be transformed if all values 
+        # are positive. 
+        x.pos <- vector(mode= "logical", length=ncol(x))
+        for(j in 1:ncol(x))
+           x.pos[j] <- (min(x[j]) > 0)
+           x.name <- dimnames(x)[[2]]
+         if( mode(x.name)=="NULL")
+           x.name <- paste("X",1:ncol(x),sep="")
+     } 
+
+   log.lik <- vector(mode ="numeric",length=length(lambda))
+
+   for(i in 1:length(lambda))
+  {     
+     if(lambda[i] !=0)
+      {  
+         # Don't apply constants. In particular, subtracting
+         # 1.0 would introduce intercept in no-intercept model.
+         # Normalization applied to SS(Res) later.
+         z <- y^lambda[i]
+         if (transform.x)
+       {  
+          x.new <- x 
+          x.new.name <- x.name
+           for(j in 1:ncol(x))
+              if(x.pos[j])
+              { 
+                 x.new[,j] <- x[,j]^lambda[i] 
+                 x.new.name[j] <- paste(x.name[j],"^",lambda[i], sep="")
+          }
+
+    }
+
+ }
+
+  else
+  { 
+          z<- log(y)
+          if(transform.x)
+           { 
+             x.new <- x 
+             x.new.name <- x.name
+              for(j in 1:ncol(x))
+                  if(x.pos[j])
+                 { 
+                     x.new[,j] <- log(x[,j])
+                     x.new.name[j] <- paste("log(",x.name[j],")",sep="")
+                }
+           }
+
+      }
+
+  if(transform.x)
+  {
+       dimnames(x.new) <- list(NULL,x.new.name)
+       reg <- lsfit(x.new,z,intercept=intercept) 
+   }
+  else 
+       reg <- lsfit(x,z,intercept = intercept)
+ 
+  if(verbose)
+ { cat("Lambda:",lambda[i], "\n")
+   ls.print(reg)
+ }
+
+ res <- reg$residuals
+ ss.res <- sum(res^2)/g^(2.0*(lambda[i] - 1.0 ))
+ if (lambda[i] !=0.0)
+  ss.res <- ss.res/lambda[i]^2
+ log.lik[i] <- -length(y)/2.0*log(ss.res)
+ }
+
+if(make.plot)
+{ 
+ if(mode(ylim)=="NULL")
+   ylim <- range(log.lik)
+   plot(lambda,log.lik,ylim=ylim, ylab="Log Likelihood", type="b", lty=1)
+   abline(max(log.lik)-3.8416/2,0,lty=2)
+ }
+return(log.lik)
+}
+```
+
+```{r}
+#### Partial residual plots ####
+ls.part.res.plot <- function(x,y,j,intercept=TRUE,x.name=NULL,y.name="Y",main=NULL)
+  
+  # Produces a partial-residual plot for variable j in x. 
+  # x - X matrix for current model (no column of 1's should be included for
+  #     for an intercept term);
+  # y - Y vector;
+  # j - a column number of x;
+  # intercept - set to FALSE for a no-intercept model;
+  # x.name - x-axis label - if not supplied, then the name of column
+  #          j in x will be used;
+  # y.name - y-axis label;
+  # main - main title for plot, if not supplied then the title is of the form
+#        "Partial-residual plot for x".
+
+{ # Get residuals. 
+  reg <- lsfit(x,y,intercept=intercept)
+  res <- reg$residuals
+  
+  
+  # add a component from x_j
+  # if there is an intercept, we want coefficient j+1
+  
+  jj <- j
+  if(intercept == TRUE)
+    jj <- j+1
+  res <- res+reg$coef[jj]*x[,j]
+  
+  # set up labels. 
+  
+  if(mode(x.name) == "NULL")
+    x.name <- dimnames(x)[[2]][j]
+  if(mode(main) == "NULL")
+    main <- paste("Partial-residual plot for", x.name)
+  
+  
+  plot(x[,j], res, main=main, xlab=x.name,
+       ylab=paste("Partial residuals for",y.name))
+  lines(lowess(x[,j],res))
+}
+
+##### Added-variable plot #####
+
+ls.added.var.plot <- function(x,y,added.var,intercept=TRUE,
+                              x.name="X",y.name="Y",main="")
+  # Produces an added-variable plot.
+  # x - X matrix for current model (no column of 1's should be included for
+  #     for an intercept term);
+  # y - Y vector;
+  # added.var - if a scalar, a column number of x;
+  #              if a vector of length > 1, values for a "new" x variable.
+  # intercept - set to FALSE for a no-intercept model;
+  # x.name - x-axis label - if added.var is a scalar, the default "x" is 
+  #           replaced by the name of column added.var;
+  # y.name - y-axis label;
+  # main - main title for plot, if not supplied then the title is of the form
+#        "Added-variable plot for x".
+{
+  if(length(added.var)==1)
+  { 
+    # added.var is a column number for a variable in x.
+    if(x.name =="X")
+      x.name <- dimnames(x)[[2]][added.var]
+    xtilde <- x[,-added.var]
+    s.res <- lsfit(xtilde,y,intercept=intercept)$residuals
+    t.res <- lsfit(xtilde,x[,added.var],intercept=intercept)$residuals
+  }
+  else
+  {
+    # added.var is a "new" x variable not in x.
+    s.res <- lsfit(x,y,intercept=intercept)$residuals
+    t.res <- lsfit(x,added.var,intercept=intercept)$residuals
+  }
+  
+  if(main =="")
+    main <- paste("Added-variable plot for", x.name)
+  
+  plot(t.res,s.res,main=main,xlab=paste("Corrected",x.name),
+       ylab=paste("Corrected",y.name))
+  lines(lowess(t.res,s.res))
+}
+```
+
+
+
+
+
+1 - Import Data
+
+```{r}
+KCHousePricesData = read.csv("kc_house_data.csv")
+
+KCHousePricesData 
+```
+
+2 - Identifying Variables 
+
+```{r}
+str(KCHousePricesData)
+dim(KCHousePricesData)
+#no id, date , #categorical waterfront, view #num condition grade 
+#justify why 
+
+```
+
+3 - Cleaning Dataset
+
+```{r}
+# To accurately analyze the data, identify if there are any missing values of type NA in the dataset
+sapply(KCHousePricesData, function(x) sum(is.na(x)))
+
+```
+
+
+** No missing values are found **
+
+
+
+```{r}
+# To further accurately analyze the data - change the variable type of "date" to Date from chr and format correctly
+KCHousePricesData = read.csv("kc_house_data.csv")
+
+KCHousePricesData
+library(lubridate)
+KCHousePricesData$date <- gsub("T000000", "", KCHousePricesData$date)
+KCHousePricesData$date <- as.Date(KCHousePricesData$date, "%Y%m%d")
+yr_sold<-format(KCHousePricesData$date,"%Y")
+yr_sold<-as.numeric(yr_sold)
+
+
+is.numeric(yr_sold)
+yr_sold
+
+
+KCHousePricesData
+full_model<-lm(price~.,data=KCHousePricesData)
+summary(full_model)
+plot(full_model,2)
+```
+
+
+CLEANING UP THE DATA SET- removing unimportant variables, 
+define categorical vaiables as such and not an integer/ num 
+```{r}
+#remove id 
+#remove date 
+#remove zipcode
+#remove lat 
+#remove long 
+#remove date 
+#use both date and yr_built to determine the houses age at point of sale 
+#remove view 
+
+
+
+
+```
+
+```{r}
+#remove id 
+#remove date 
+#remove zipcode
+#remove lat 
+#remove long 
+#remove date 
+#use both date and yr_built to determine the houses age at point of sale 
+#remove view 
+#remove yr_built & date--> replaced with house_age
+#add house age 
+#remove sqft_basement 
+
+age<-yr_sold-KCHousePricesData[,15]
+age
+KCHousePricesData$house_age<-as.numeric(age)
+
+
+KCHousePricesData_clean<- KCHousePricesData[,!(colnames(KCHousePricesData)%in% c("id","date","zipcode","yr_built","lat","long","view","condition","grade","sqft_basement"))]
+
+
+
+KCHousePricesData_clean$waterfront<-factor(KCHousePricesData_clean[,7])
+is.factor(KCHousePricesData_clean$waterfront)
+KCHousePricesData_clean$waterfront
+
+KCHousePricesData_clean$yr_renovated<-replace(KCHousePricesData_clean$yr_renovated,KCHousePricesData_clean$yr_renovated>1,1)
+
+KCHousePricesData_clean$yr_renovated<-factor(KCHousePricesData_clean$yr_renovated)
+
+
+
+KCHousePricesData_clean
+```
+
+
+
+
+```{r}
+clean_model<-lm(price~.,data=KCHousePricesData_clean)
+summary(clean_model)
+plot(clean_model,2)
+
+
+```
+
+OBSERVING (BASIC) STATISTICS FOR EACH COLUMN
+
+```{r}
+describe(KCHousePricesData_clean)
+```
+
+#MODEL BUILDING AND SUMMARY 
+#dont run- replaced model_y with clean_model 
+```{r eval=FALSE, include=FALSE}
+# creating the model 
+model_y <- lm(price~., data = KCHousePricesData)
+# summary of lm 
+summary(model_y)
+# clearly sqft_basement is not significant
+```
+
+** Plotting the Q-Q normal plot for original model_y **
+#dont run (old calc) 
+```{r eval=FALSE, include=FALSE}
+plot(model_y,2)
+
+#the normal Q-Q plot deviates from the straight line and distribution is  Kurtosis - meaning the normal Q-Q plot has heavy tails 
+#we must find a better model as model_y clearly includes outliers 
+
+
+```
+
+-We use backward elimination procedure to selecte a subset model from "KCHousePricesData_CLEAN
+
+```{r}
+reg.model = regsubsets(price~., data = KCHousePricesData_clean, nvmax = 11, method = "backward")
+reg.summary=summary(reg.model)
+reg.summary
+data.frame(
+  Adj.R2 = which.max(reg.summary$adjr2),
+  CP = which.min(reg.summary$cp),
+  BIC = which.min(reg.summary$bic)
+)
+
+
+
+#the size of the subset model based on : 
+#R_adj^2 = 9 features 
+#C_p statistics is 9 features
+#BIC statistics is 8 features 
+```
+
+
+-Using Radj^2, Cp and BIC method to find the best subset of KCHousePricesData
+
+```{r}
+# we can see from the following plots which variables are not suitable for subset model.
+plot(reg.model, scale = "adjr2")
+plot(reg.model, scale = "Cp")
+plot(reg.model, scale = "bic")
+
+# R_adj^2, C_p and BIC statistics recommend that the subset model include 9 predictors and all conclude to remove "sqft_lot", "sqft_above" 
+
+
+```
+
+CONSTRUCTING A MODEL WITHOUT sqft_lot, sqft_above  
+```{r}
+#removing SQFT_LOT AND SQFT_ABOVE from the data set
+KCHousePricesData_reduced<- KCHousePricesData_clean[,!(colnames(KCHousePricesData_clean)%in% c("sqft_lot","sqft_above"))]
+KCHousePricesData_reduced
+
+fit_reduced_model = lm(price~., data=KCHousePricesData_reduced)
+summary(fit_reduced_model)
+
+
+
+#we can see the model is performing poorer than the original model_y 
+#therefore we seek to use other regression methods to increase the model performance 
+#we use leverage, outlier and influential analysis for this 
+
+
+```
+
+PROVING THE SUBSET MODEL (EXCLUDING SQFT_LOT AND SQFT_ABOVE) performs better than clean_model
+```{r}
+library(AICcmodavg)
+models<-list(clean_model,fit_reduced_model)
+mod.names<-c('full.model', 'exclude sqft_lot and sqft_above')
+aictab(cand.set=models, modnames=mod.names)
+
+#we can see the model excluding sqft_lot and sqft_above gives us a better model compared to the full model by the use of the Akaike information criterion   
+```
+PERFORM ANOTHER ROUND 
+```{r}
+reg.model2 = regsubsets(price~., data = KCHousePricesData_reduced, nvmax = 9, method = "backward")
+reg.summary2=summary(reg.model2)
+reg.summary2
+data.frame(
+  Adj.R2 = which.max(reg.summary2$adjr2),
+  CP = which.min(reg.summary2$cp),
+  BIC = which.min(reg.summary2$bic)
+)
+
+plot(reg.model2, scale = "adjr2")
+plot(reg.model2, scale = "Cp")
+plot(reg.model2, scale = "bic")
+
+#we conclude all reductions are maximized and the BIC is not as accurate as other models for large data frames 
+
+
+```
+
+
+IGNORED #dont run 
+
+```{r eval=FALSE, include=FALSE}
+#anova(model_y)
+#model_basement <- lm(price ~ sqft_basement, data = KCHousePricesData)
+model_living <- lm(price ~ condition, data =KCHousePricesData)
+summary(model_living)
+#summary(model_basement)
+```
+
+IGNORED Analyzing different variable relations 
+
+```{r eval=FALSE, include=FALSE}
+summary(lm(price ~ sqft_living + bedrooms + condition + yr_renovated + view + zipcode, data = KCHousePricesData))
+
+plot(lm(price ~ sqft_living, data= KCHousePricesData)$fitted, lm(price ~ sqft_living, data = KCHousePricesData)$resid, xlab = "fitted w sqft", ylab = "resid", pch = 18) + abline(h=0)
+
+plot(lm(price ~ bedrooms, data= KCHousePricesData)$fitted, lm(price ~ bedrooms, data = KCHousePricesData)$resid, xlab = "fitted w bedrooms", ylab = "resid", pch = 18)
+
+plot(lm(price ~ yr_renovated, data= KCHousePricesData)$fitted, lm(price ~ yr_renovated, data = KCHousePricesData)$resid, xlab = "fitted w yr_renovated", ylab = "resid", pch = 18)
+
+plot(lm(price ~ view, data= KCHousePricesData)$fitted, lm(price ~ view, data = KCHousePricesData)$resid, xlab = "fitted w view", ylab = "resid", pch = 18)
+
+plot(lm(price ~ zipcode, data= KCHousePricesData)$fitted, lm(price ~ zipcode, data = KCHousePricesData)$resid, xlab = "fitted w yr_renovated", ylab = "resid", pch = 18)
+
+```
+
+IGNORED Combining variables in transformed data 
+```{r eval=FALSE, include=FALSE}
+summary(lm(log(price) ~ sqft_living + bedrooms + condition + yr_renovated + view + zipcode, data= KCHousePricesData))
+```
+
+IGNORED Creating prediction and confidence intervals 
+```{r eval=FALSE, include=FALSE}
+# Square feet Living
+
+predict(lm(log(price) ~ sqft_living, data = KCHousePricesData), newdata = data.frame(sqft_living = 2000), interval = "confidence")
+
+predict(lm(log(price) ~ sqft_living, data = KCHousePricesData), newdata = data.frame(sqft_living = 2000), interval = "prediction")
+```
+
+IGNORED
+```{r eval=FALSE, include=FALSE}
+# Bedrooms
+
+predict(lm(log(price) ~ bedrooms, data = KCHousePricesData), newdata = data.frame(bedrooms = 3), interval = "confidence")
+
+predict(lm(log(price) ~ bedrooms, data = KCHousePricesData), newdata = data.frame(bedrooms = 3), interval = "prediction")
+```
+
+IGNORED
+```{r eval=FALSE, include=FALSE}
+# Year Renovated
+
+predict(lm(log(price) ~ yr_renovated, data = KCHousePricesData), newdata = data.frame(yr_renovated = 84), interval = "confidence")
+
+predict(lm(log(price) ~ yr_renovated, data = KCHousePricesData), newdata = data.frame(yr_renovated = 84), interval = "prediction")
+```
+
+IGNORED
+```{r eval=FALSE, include=FALSE}
+plot(KCHousePricesData$sqft_living, log(KCHousePricesData$price), pch = 18)
+sqftlm = lm(log(price) ~ sqft_living, data = KCHousePricesData)
+abline(sqftlm, col = "red")
+newX = seq(min(KCHousePricesData$sqft_living), max(KCHousePricesData$sqft_living), 1)
+prd.CI = predict(sqftlm, newdata = data.frame(sqft_living = newX), interval = "confidence", 
+    level = 0.95)
+lines(newX, prd.CI[, 2], col = "blue", lty = 2)
+lines(newX, prd.CI[, 3], col = "blue", lty = 2)
+prd.PI = predict(sqftlm, newdata = data.frame(sqft_living = newX), interval = "prediction", 
+    level = 0.95)
+lines(newX, prd.PI[, 2], col = "green", lty = 3)
+lines(newX, prd.PI[, 3], col = "green", lty = 3)
+```
+
+IGNORED
+```{r eval=FALSE, include=FALSE}
+KCHousePricesData_quantitative = KCHousePricesData[,!(colnames(KCHousePricesData) %in% c( "date"))]
+cr<-cor(KCHousePricesData_quantitative)
+cr
+
+```
+
+```{r}
+
+# Leverage: A high leverage data point has extreme predictor X values. 
+
+#  Outlier: An outlier is a data point whose response value Y does not follow the general trend of the rest of the data. 
+  
+#  Influential: A data point is influential if it unduly influences predicted responses, the estimated slope coefficients, or hypothesis test results
+
+#USE OUR NEW EXCLUDED DATA TO PERFORM A BETTER TEST 
+fit_reduced_model
+
+lev1<-hatvalues(fit_reduced_model)[hatvalues(fit_reduced_model)>2*(length(coef(fit_reduced_model))/length(hatvalues(fit_reduced_model)))]
+leve1<-as.integer(names(lev1))
+paste(leve1, collapse=", ")
+
+out<-rstandard(fit_reduced_model)[abs(rstandard(fit_reduced_model)) > 2]
+oute<-as.integer(names(out))
+paste(oute, collapse=", ")
+
+cd<-cooks.distance(fit_reduced_model)[cooks.distance(fit_reduced_model) >4/length(cooks.distance(fit_reduced_model))]
+cde<-as.integer(names(cd))
+paste(cde, collapse=", ")
+
+```
+```{r}
+intersect(intersect(cde,leve1), oute)
+
+```
+
+```{r}
+KCHousePricesData_new <- KCHousePricesData_reduced[-c(intersect(intersect(cde,leve1), oute)),]
+KCHousePricesData_new
+new_reduced_model <- lm(price~.,data=KCHousePricesData_new)
+summary(new_reduced_model)
+
+```
+
+
+** Plotting the Q-Q normal plot for the new KCHousePricesData (model_yy) **
+```{r}
+plot(clean_model,2)
+plot(fit_reduced_model,2)
+plot(new_reduced_model,2)
+
+#we can see our new_reduced_model is still not linear, we decide to further investigate this linearity problem with futher methods 
+```
+
+
+
+```{r}
+KCHousePricesData_new
+#ii)
+#Separate the predictors and response variable
+Y<-KCHousePricesData_new[,1]
+x<-KCHousePricesData_new[,2:9]
+Y
+x
+
+result=box.cox(x,Y, transform.x = FALSE)
+lambda_seq = seq (-2, 2,len=42) # This sequence is taken from the modified box.cox(...)  above.
+optimal_lambda = lambda_seq[which.max(result)]
+optimal_lambda
+#ii)
+fit.model.2 = lm(log(price)~., data=KCHousePricesData_new)
+summary(fit.model.2)
+
+plot(fit.model.2,2)
+
+#optimal lambda = 0.04878049 but in the plot we can see 0 falls in the 95% CI. hence we can choose nice value of lambda=0 and the suggested transformation for price is logarithmic ie. log(price)
+
+#based on the f-stat= 2956 on 9 and 21267 DF, it is concluded that the regression as a whole is performing worse than the model untransformed data
+
+#we try to apply the box cox transform to the model without sqft_above and sqft_lot (fit_reduced_model)
+
+
+```
+
+
+
+
+```{r}
+fit_reduced_model
+KCHousePricesData_reduced
+
+#ii)
+#Separate the predictors and response variable
+YY<-KCHousePricesData_reduced[,1]
+xx<-KCHousePricesData_reduced[,2:9]
+YY
+xx
+
+result2=box.cox(xx,YY, transform.x = FALSE)
+lambda_seq2 = seq (-2, 2,len=42) # This sequence is taken from the modified box.cox(...)  above.
+optimal_lambda2 = lambda_seq2[which.max(result2)]
+optimal_lambda2
+#ii)
+fit.model.3 = lm(log(price)~., data=KCHousePricesData_reduced)
+summary(fit.model.3)
+plot(fit.model.3,2)
+
+#the optimal value of lambda found is lambda=0.04878049. we can see that 0 falls in the 95% confidence interval, hence we choose the nice value of lambda=0 and the suggested transform response variable is logarithmic ie. log(price)
+
+#based on the F-stat= 3297 on 9 and 21603, it is concluded that the regression as a whole is performing better. the p-value=2.2e-16  is <0.05, hence we reject the null hypothesis and prove that at least one of the predictors has a significant linear relationship with the response variable (price)
+
+
+
+
+```
+CHECKING THE 4 ERROR TERM ASSUMPTIONS 
+-Linearity
+-Independence 
+-Normal distrivution of residuals 
+-Equal Variance of residuals 
+```{r}
+residuals<-rstandard(fit.model.3)
+residuals
+
+plot(residuals)
+#the scatter plot of the standardized residuals plot follows a linear pattern 
+#shows us the linearity assumption is met 
+
+#checking normality
+hist(residuals)
+#the histogram of the residuals is not skewed
+#this shows us the normality assumption is satisfied 
+plot(fit.model.3,which=1:6)
+
+#independence assumption 
+durbinWatsonTest(fit.model.3)
+#the test stat for Dubhin-Watson is 1.971234 and the corresponding p-value is=0.036 . Since the p=value<0.05, we have enough evidence to state that our independence assumption is met! 
+
+#Equal Variance of residuals 
+#we analyze the Residuals Vs. Fitted plot
+#we can see the red line lies under 0, this tells us that the residual errors will always have a mean value of 0
+
+```
+
+K-Means Clustering
+```{r}
+install.packages("factoextra")
+install.packages("cluster")
+library(factoextra)
+library(cluster)
+
+
+k_KCHousePricesData_reduced <- subset(KCHousePricesData_reduced, select = -c(waterfront, yr_renovated))
+
+k_KCHousePricesData_reduced <- na.omit(k_KCHousePricesData_reduced)
+
+k_KCHousePricesData_reduced <- scale(k_KCHousePricesData_reduced)
+
+head(k_KCHousePricesData_reduced)
+
+
+
+
+
+
+```
+
+```{r}
+memory.size() ### Checking your memory size
+memory.limit() ## Checking the set limit
+memory.limit(size=56000) 
+```
+
+
+```{r}
+fviz_nbclust(k_KCHousePricesData_reduced, kmeans, method = "wss")
+
+```
+
+```{r}
+
+gap_stat <- clusGap(k_KCHousePricesData_reduced,
+                    FUN = kmeans,
+                    nstart = 25,
+                    K.max = 10,
+                    B = 50)
+
+fviz_gap_stat(gap_stat)
+
+
+
+```
+
+```{r}
+set.seed(1)
+
+km <- kmeans(k_KCHousePricesData_reduced, centers = 6, nstart = 25)
+
+km
+
+fviz_cluster(km,data=k_KCHousePricesData_reduced)
+```
+```{r}
+#Analyzing data using Decision Tree 
+
+#Install packages
+install.packages("rpart.plot")
+library(rpart)
+library(rpart.plot)
+
+
+create_train_test <- function(data, size = 0.8, train = TRUE) {
+    #Count number of rows in the dataset
+    n_row = nrow(data)
+    #Return the nth row to construct the train set
+    total_row = size * n_row
+    #Select the first row to the nth rows
+    train_sample <- 1: total_row
+    #If true, return the train set
+    if (train == TRUE) {
+        return (data[train_sample, ])
+      #Else, test set
+    } else {
+        return (data[-train_sample, ])
+    }
+}
+
+#Train the model on the train set and test the prediction on the test set
+create_train_test(KCHousePricesData_reduced, size = 0.8, train = TRUE)
+
+#Test function and check the dimension 
+data_train <- create_train_test(KCHousePricesData_reduced, 0.8, train = TRUE)
+data_test <- create_train_test(KCHousePricesData_reduced, 0.8, train = FALSE)
+dim(data_train)
+
+#Verify the randomization process is correct 
+prop.table(table(data_test$price))
+
+#Building the decision tree 
+rpart(fit.model.3, data=KCHousePricesData_reduced, method='anova')
+
+fit <- rpart(fit.model.3, data = data_train, method = 'anova')
+rpart.plot(fit, extra =101, box.palette = "RdYlGn")
+
+
+```
+
